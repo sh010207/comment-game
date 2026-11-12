@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>댓글로 만들어가는 게임</title>
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background: #1b1f24;
+    touch-action: none;
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
+  }
+  canvas {
+    display: block;
+    width: 100vw;
+    height: 100vh;
+    height: 100dvh;
+  }
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<script>
+(() => {
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+
+  // ===== 세계 =====
+  const WORLD = { w: 3000, h: 3000 };
+  const TILE = 60;
+
+  // ===== 캐릭터 =====
+  const player = {
+    x: WORLD.w / 2,
+    y: WORLD.h / 2,
+    r: 16,
+    speed: 220,      // 초당 픽셀
+    dirX: 0,
+    dirY: 1,         // 바라보는 방향
+    moving: false,
+    walkTime: 0
+  };
+
+  // ===== 카메라 =====
+  const cam = { x: 0, y: 0 };
+
+  // ===== 화면 크기 =====
+  let W = 0, H = 0, DPR = 1;
+  function resize() {
+    DPR = Math.min(window.devicePixelRatio || 1, 2);
+    W = window.innerWidth;
+    H = window.innerHeight;
+    canvas.width = Math.floor(W * DPR);
+    canvas.height = Math.floor(H * DPR);
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  // ===== 키보드 입력 =====
+  const keys = {};
+  const KEYMAP = {
+    ArrowUp: 'up', KeyW: 'up',
+    ArrowDown: 'down', KeyS: 'down',
+    ArrowLeft: 'left', KeyA: 'left',
+    ArrowRight: 'right', KeyD: 'right'
+  };
+  // e.code가 비어 있는 환경을 위해 e.key로도 확인
+  const KEYMAP_BY_KEY = {
+    ArrowUp: 'up', Up: 'up', w: 'up', W: 'up', 'ㅈ': 'up',
+    ArrowDown: 'down', Down: 'down', s: 'down', S: 'down', 'ㄴ': 'down',
+    ArrowLeft: 'left', Left: 'left', a: 'left', A: 'left', 'ㅁ': 'left',
+    ArrowRight: 'right', Right: 'right', d: 'right', D: 'right', 'ㅇ': 'right'
+  };
+  const keyOf = e => KEYMAP[e.code] || KEYMAP_BY_KEY[e.key];
+  document.addEventListener('keydown', e => {
+    const k = keyOf(e);
+    if (k) { keys[k] = true; e.preventDefault(); }
+  }, true);
+  document.addEventListener('keyup', e => {
+    const k = keyOf(e);
+    if (k) { keys[k] = false; e.preventDefault(); }
+  }, true);
+  window.addEventListener('blur', () => { for (const k in keys) keys[k] = false; });
+
+  // 키보드 포커스 확보 (미리보기 창 안에서 열려도 키 입력이 들어오도록)
+  canvas.tabIndex = 0;
+  canvas.style.outline = 'none';
+  function grabFocus() {
+    try { window.focus(); } catch (_) {}
+    try { canvas.focus({ preventScroll: true }); } catch (_) {}
+  }
+  grabFocus();
+  window.addEventListener('load', grabFocus);
+  document.addEventListener('pointerdown', grabFocus, true);
+  document.addEventListener('mouseenter', grabFocus);
+
+  // ===== 터치 조이스틱 (화면 아무 곳이나 누르고 끌기) =====
+  const stick = { active: false, id: null, ox: 0, oy: 0, x: 0, y: 0, max: 50 };
+
+  function stickStart(id, x, y) {
+    stick.active = true;
+    stick.id = id;
+    stick.ox = x; stick.oy = y;
+    stick.x = x; stick.y = y;
+  }
+  function stickMove(x, y) {
+    stick.x = x; stick.y = y;
+  }
+  function stickEnd() {
+    stick.active = false;
+    stick.id = null;
+  }
+
+  canvas.addEventListener('pointerdown', e => {
+    if (stick.active) return;
+    canvas.setPointerCapture(e.pointerId);
+    stickStart(e.pointerId, e.clientX, e.clientY);
+    e.preventDefault();
+  });
+  canvas.addEventListener('pointermove', e => {
+    if (stick.active && e.pointerId === stick.id) {
+      stickMove(e.clientX, e.clientY);
+      e.preventDefault();
+    }
+  });
+  const endHandler = e => {
+    if (stick.active && e.pointerId === stick.id) stickEnd();
+  };
+  canvas.addEventListener('pointerup', endHandler);
+  canvas.addEventListener('pointercancel', endHandler);
+
+  function getInput() {
+    let ix = 0, iy = 0;
+    if (keys.left) ix -= 1;
+    if (keys.right) ix += 1;
+    if (keys.up) iy -= 1;
+    if (keys.down) iy += 1;
+
+    if (stick.active) {
+      let dx = stick.x - stick.ox;
+      let dy = stick.y - stick.oy;
+      const d = Math.hypot(dx, dy);
+      if (d > 8) {
+        const m = Math.min(d, stick.max) / stick.max;
+        ix += (dx / d) * m;
+        iy += (dy / d) * m;
+      }
+    }
+
+    const len = Math.hypot(ix, iy);
+    if (len > 1) { ix /= len; iy /= len; }
+    return { x: ix, y: iy };
+  }
+
+  // ===== 업데이트 =====
+  function update(dt) {
+    const inp = getInput();
+    const mag = Math.hypot(inp.x, inp.y);
+    player.moving = mag > 0.05;
+
+    if (player.moving) {
+      player.x += inp.x * player.speed * dt;
+      player.y += inp.y * player.speed * dt;
+      player.dirX = inp.x / mag;
+      player.dirY = inp.y / mag;
+      player.walkTime += dt * (6 + 6 * mag);
+    } else {
+      player.walkTime = 0;
+    }
+
+    // 세계 경계
+    player.x = Math.max(player.r, Math.min(WORLD.w - player.r, player.x));
+    player.y = Math.max(player.r, Math.min(WORLD.h - player.r, player.y));
+
+    // 카메라: 캐릭터를 화면 가운데에
+    cam.x = player.x - W / 2;
+    cam.y = player.y - H / 2;
+  }
+
+  // ===== 그리기 =====
+  function drawWorld() {
+    // 바깥(세계 밖)
+    ctx.fillStyle = '#1b1f24';
+    ctx.fillRect(0, 0, W, H);
+
+    // 세계 바닥
+    ctx.fillStyle = '#3f5a3c';
+    ctx.fillRect(-cam.x, -cam.y, WORLD.w, WORLD.h);
+
+    // 움직임이 보이도록 옅은 격자
+    ctx.strokeStyle = 'rgba(255,255,255,0.05)';
+    ctx.lineWidth = 1;
+    const startX = Math.max(0, Math.floor(cam.x / TILE) * TILE);
+    const endX = Math.min(WORLD.w, cam.x + W + TILE);
+    const startY = Math.max(0, Math.floor(cam.y / TILE) * TILE);
+    const endY = Math.min(WORLD.h, cam.y + H + TILE);
+    ctx.beginPath();
+    for (let x = startX; x <= endX; x += TILE) {
+      const sx = Math.round(x - cam.x) + 0.5;
+      ctx.moveTo(sx, Math.max(0, -cam.y));
+      ctx.lineTo(sx, Math.min(H, WORLD.h - cam.y));
+    }
+    for (let y = startY; y <= endY; y += TILE) {
+      const sy = Math.round(y - cam.y) + 0.5;
+      ctx.moveTo(Math.max(0, -cam.x), sy);
+      ctx.lineTo(Math.min(W, WORLD.w - cam.x), sy);
+    }
+    ctx.stroke();
+
+    // 세계 테두리
+    ctx.strokeStyle = 'rgba(0,0,0,0.5)';
+    ctx.lineWidth = 6;
+    ctx.strokeRect(-cam.x, -cam.y, WORLD.w, WORLD.h);
+  }
+
+  function drawPlayer() {
+    const sx = player.x - cam.x;
+    const sy = player.y - cam.y;
+    const bob = player.moving ? Math.abs(Math.sin(player.walkTime)) * 3 : 0;
+
+    // 그림자
+    ctx.fillStyle = 'rgba(0,0,0,0.25)';
+    ctx.beginPath();
+    ctx.ellipse(sx, sy + player.r * 0.7, player.r * 0.95, player.r * 0.45, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // 발 (걷는 모션)
+    const step = player.moving ? Math.sin(player.walkTime) * 5 : 0;
+    const px = -player.dirY, py = player.dirX; // 진행 방향의 수직
+    ctx.fillStyle = '#2b2b3a';
+    for (const side of [-1, 1]) {
+      const fx = sx + px * side * 7 + player.dirX * step * side;
+      const fy = sy + py * side * 7 + player.dirY * step * side + 4;
+      ctx.beginPath();
+      ctx.arc(fx, fy, 4.5, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // 몸
+    const by = sy - bob;
+    ctx.fillStyle = '#f2c14e';
+    ctx.strokeStyle = '#7a5a12';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(sx, by, player.r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+
+    // 눈 (바라보는 방향)
+    const ex = sx + player.dirX * 7;
+    const ey = by + player.dirY * 7;
+    ctx.fillStyle = '#222';
+    for (const side of [-1, 1]) {
+      ctx.beginPath();
+      ctx.arc(ex + px * side * 5, ey + py * side * 5, 2.6, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  function drawStick() {
+    if (!stick.active) return;
+    let dx = stick.x - stick.ox;
+    let dy = stick.y - stick.oy;
+    const d = Math.hypot(dx, dy);
+    if (d > stick.max) { dx = dx / d * stick.max; dy = dy / d * stick.max; }
+
+    ctx.fillStyle = 'rgba(255,255,255,0.12)';
+    ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(stick.ox, stick.oy, stick.max, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.fillStyle = 'rgba(255,255,255,0.45)';
+    ctx.beginPath();
+    ctx.arc(stick.ox + dx, stick.oy + dy, 22, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  function render() {
+    drawWorld();
+    drawPlayer();
+    drawStick();
+  }
+
+  // ===== 루프 =====
+  let last = performance.now();
+  function loop(now) {
+    const dt = Math.min(0.05, (now - last) / 1000);
+    last = now;
+    update(dt);
+    render();
+    requestAnimationFrame(loop);
+  }
+  requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
