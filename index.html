@@ -48,6 +48,31 @@
     walkTime: 0
   };
 
+  // ===== 총 =====
+  const gun = { cooldown: 0, rate: 0.18, bulletSpeed: 720, bulletLife: 0.75, recoil: 0 };
+  const bullets = [];
+
+  // ===== 몬스터 =====
+  const MONSTER_COUNT = 14;
+  const monsters = [];
+  const poofs = [];
+  function spawnMonster() {
+    let x, y, tries = 0;
+    do {
+      x = 80 + Math.random() * (WORLD.w - 160);
+      y = 80 + Math.random() * (WORLD.h - 160);
+      tries++;
+    } while (Math.hypot(x - player.x, y - player.y) < 500 && tries < 50);
+    const a = Math.random() * Math.PI * 2;
+    monsters.push({
+      x, y, r: 18, hp: 3, maxHp: 3, speed: 50 + Math.random() * 30,
+      vx: Math.cos(a), vy: Math.sin(a), turn: 1 + Math.random() * 2,
+      hit: 0, t: Math.random() * 10
+    });
+  }
+  for (let i = 0; i < MONSTER_COUNT; i++) spawnMonster();
+  let respawnQueue = [];
+
   // ===== 카메라 =====
   const cam = { x: 0, y: 0 };
 
@@ -70,14 +95,16 @@
     ArrowUp: 'up', KeyW: 'up',
     ArrowDown: 'down', KeyS: 'down',
     ArrowLeft: 'left', KeyA: 'left',
-    ArrowRight: 'right', KeyD: 'right'
+    ArrowRight: 'right', KeyD: 'right',
+    Space: 'fire', KeyJ: 'fire'
   };
   // e.code가 비어 있는 환경을 위해 e.key로도 확인
   const KEYMAP_BY_KEY = {
     ArrowUp: 'up', Up: 'up', w: 'up', W: 'up', 'ㅈ': 'up',
     ArrowDown: 'down', Down: 'down', s: 'down', S: 'down', 'ㄴ': 'down',
     ArrowLeft: 'left', Left: 'left', a: 'left', A: 'left', 'ㅁ': 'left',
-    ArrowRight: 'right', Right: 'right', d: 'right', D: 'right', 'ㅇ': 'right'
+    ArrowRight: 'right', Right: 'right', d: 'right', D: 'right', 'ㅇ': 'right',
+    ' ': 'fire', Spacebar: 'fire', j: 'fire', J: 'fire', 'ㅓ': 'fire'
   };
   const keyOf = e => KEYMAP[e.code] || KEYMAP_BY_KEY[e.key];
   document.addEventListener('keydown', e => {
@@ -119,7 +146,24 @@
     stick.id = null;
   }
 
+  // ===== 발사 버튼 (오른쪽 아래) =====
+  const fireBtn = { r: 40, pressed: false, id: null };
+  function fireBtnPos() {
+    return { x: W - fireBtn.r - 28, y: H - fireBtn.r - 40 };
+  }
+  function onFireBtn(x, y) {
+    const p = fireBtnPos();
+    return Math.hypot(x - p.x, y - p.y) <= fireBtn.r + 14;
+  }
+
   canvas.addEventListener('pointerdown', e => {
+    if (!fireBtn.pressed && onFireBtn(e.clientX, e.clientY)) {
+      canvas.setPointerCapture(e.pointerId);
+      fireBtn.pressed = true;
+      fireBtn.id = e.pointerId;
+      e.preventDefault();
+      return;
+    }
     if (stick.active) return;
     canvas.setPointerCapture(e.pointerId);
     stickStart(e.pointerId, e.clientX, e.clientY);
@@ -133,6 +177,7 @@
   });
   const endHandler = e => {
     if (stick.active && e.pointerId === stick.id) stickEnd();
+    if (fireBtn.pressed && e.pointerId === fireBtn.id) { fireBtn.pressed = false; fireBtn.id = null; }
   };
   canvas.addEventListener('pointerup', endHandler);
   canvas.addEventListener('pointercancel', endHandler);
@@ -179,6 +224,73 @@
     // 세계 경계
     player.x = Math.max(player.r, Math.min(WORLD.w - player.r, player.x));
     player.y = Math.max(player.r, Math.min(WORLD.h - player.r, player.y));
+
+    // 총 쏘기
+    gun.cooldown -= dt;
+    gun.recoil = Math.max(0, gun.recoil - dt * 6);
+    if ((keys.fire || fireBtn.pressed) && gun.cooldown <= 0) {
+      gun.cooldown = gun.rate;
+      gun.recoil = 1;
+      const mx = player.x + player.dirX * (player.r + 14);
+      const my = player.y + player.dirY * (player.r + 14);
+      bullets.push({
+        x: mx, y: my,
+        vx: player.dirX * gun.bulletSpeed, vy: player.dirY * gun.bulletSpeed,
+        life: gun.bulletLife
+      });
+    }
+
+    // 총알 이동 + 몬스터 명중
+    for (let i = bullets.length - 1; i >= 0; i--) {
+      const b = bullets[i];
+      b.x += b.vx * dt; b.y += b.vy * dt; b.life -= dt;
+      let dead = b.life <= 0 || b.x < 0 || b.y < 0 || b.x > WORLD.w || b.y > WORLD.h;
+      if (!dead) {
+        for (let j = monsters.length - 1; j >= 0; j--) {
+          const m = monsters[j];
+          if (Math.hypot(b.x - m.x, b.y - m.y) < m.r + 4) {
+            m.hp--; m.hit = 0.12;
+            m.x += b.vx / gun.bulletSpeed * 6; m.y += b.vy / gun.bulletSpeed * 6;
+            dead = true;
+            if (m.hp <= 0) {
+              poofs.push({ x: m.x, y: m.y, t: 0 });
+              monsters.splice(j, 1);
+              respawnQueue.push(3);
+            }
+            break;
+          }
+        }
+      }
+      if (dead) bullets.splice(i, 1);
+    }
+
+    // 몬스터 돌아다니기
+    for (const m of monsters) {
+      m.t += dt;
+      m.hit = Math.max(0, m.hit - dt);
+      m.turn -= dt;
+      if (m.turn <= 0) {
+        const a = Math.random() * Math.PI * 2;
+        m.vx = Math.cos(a); m.vy = Math.sin(a);
+        m.turn = 1 + Math.random() * 2.5;
+      }
+      m.x += m.vx * m.speed * dt;
+      m.y += m.vy * m.speed * dt;
+      if (m.x < m.r || m.x > WORLD.w - m.r) { m.vx *= -1; m.x = Math.max(m.r, Math.min(WORLD.w - m.r, m.x)); }
+      if (m.y < m.r || m.y > WORLD.h - m.r) { m.vy *= -1; m.y = Math.max(m.r, Math.min(WORLD.h - m.r, m.y)); }
+    }
+
+    // 쓰러진 몬스터는 잠시 뒤 다른 곳에 다시 나타남
+    for (let i = respawnQueue.length - 1; i >= 0; i--) {
+      respawnQueue[i] -= dt;
+      if (respawnQueue[i] <= 0) { respawnQueue.splice(i, 1); spawnMonster(); }
+    }
+
+    // 쓰러짐 효과
+    for (let i = poofs.length - 1; i >= 0; i--) {
+      poofs[i].t += dt;
+      if (poofs[i].t > 0.4) poofs.splice(i, 1);
+    }
 
     // 카메라: 캐릭터를 화면 가운데에
     cam.x = player.x - W / 2;
@@ -254,6 +366,29 @@
     ctx.fill();
     ctx.stroke();
 
+    // 총 (바라보는 방향으로 듦)
+    {
+      const back = gun.recoil * 3;
+      const gx = sx + player.dirX * (player.r - 4 - back) + px * 6;
+      const gy = by + player.dirY * (player.r - 4 - back) + py * 6;
+      ctx.save();
+      ctx.translate(gx, gy);
+      ctx.rotate(Math.atan2(player.dirY, player.dirX));
+      ctx.fillStyle = '#3a3d44';
+      ctx.strokeStyle = '#15171b';
+      ctx.lineWidth = 1.5;
+      ctx.fillRect(-4, -3.5, 20, 7);
+      ctx.strokeRect(-4, -3.5, 20, 7);
+      ctx.fillRect(-2, 2, 5, 6);
+      if (gun.recoil > 0.7) {
+        ctx.fillStyle = '#ffd34d';
+        ctx.beginPath();
+        ctx.arc(19, 0, 5, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.restore();
+    }
+
     // 눈 (바라보는 방향)
     const ex = sx + player.dirX * 7;
     const ey = by + player.dirY * 7;
@@ -263,6 +398,89 @@
       ctx.arc(ex + px * side * 5, ey + py * side * 5, 2.6, 0, Math.PI * 2);
       ctx.fill();
     }
+  }
+
+  function drawMonsters() {
+    for (const m of monsters) {
+      const sx = m.x - cam.x, sy = m.y - cam.y;
+      if (sx < -40 || sy < -40 || sx > W + 40 || sy > H + 40) continue;
+      const wob = Math.sin(m.t * 6) * 1.5;
+      ctx.fillStyle = 'rgba(0,0,0,0.25)';
+      ctx.beginPath();
+      ctx.ellipse(sx, sy + m.r * 0.7, m.r, m.r * 0.45, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.fillStyle = m.hit > 0 ? '#ffffff' : '#8e44ad';
+      ctx.strokeStyle = '#4a1f5c';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.ellipse(sx, sy - wob, m.r + wob * 0.5, m.r - wob * 0.5, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+
+      // 눈
+      const ex = sx + m.vx * 6, ey = sy - wob + m.vy * 6 - 3;
+      ctx.fillStyle = '#fff';
+      for (const side of [-1, 1]) {
+        ctx.beginPath(); ctx.arc(ex + side * 6, ey, 4, 0, Math.PI * 2); ctx.fill();
+      }
+      ctx.fillStyle = '#c0392b';
+      for (const side of [-1, 1]) {
+        ctx.beginPath(); ctx.arc(ex + side * 6 + m.vx * 1.5, ey + m.vy * 1.5, 2, 0, Math.PI * 2); ctx.fill();
+      }
+
+      // 체력바
+      if (m.hp < m.maxHp) {
+        const bw = 30;
+        ctx.fillStyle = 'rgba(0,0,0,0.5)';
+        ctx.fillRect(sx - bw / 2, sy - m.r - 14, bw, 5);
+        ctx.fillStyle = '#e74c3c';
+        ctx.fillRect(sx - bw / 2, sy - m.r - 14, bw * (m.hp / m.maxHp), 5);
+      }
+    }
+    for (const p of poofs) {
+      const k = p.t / 0.4;
+      ctx.strokeStyle = `rgba(200,160,230,${1 - k})`;
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(p.x - cam.x, p.y - cam.y, 10 + k * 26, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+  }
+
+  function drawBullets() {
+    ctx.strokeStyle = '#ffe27a';
+    ctx.lineWidth = 4;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    for (const b of bullets) {
+      const sx = b.x - cam.x, sy = b.y - cam.y;
+      ctx.moveTo(sx, sy);
+      ctx.lineTo(sx - b.vx * 0.015, sy - b.vy * 0.015);
+    }
+    ctx.stroke();
+    ctx.lineCap = 'butt';
+  }
+
+  function drawFireBtn() {
+    const p = fireBtnPos();
+    ctx.fillStyle = fireBtn.pressed ? 'rgba(255,90,70,0.55)' : 'rgba(255,90,70,0.3)';
+    ctx.strokeStyle = 'rgba(255,255,255,0.5)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, fireBtn.r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    // 조준경 모양
+    ctx.strokeStyle = 'rgba(255,255,255,0.85)';
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, 13, 0, Math.PI * 2);
+    ctx.moveTo(p.x - 20, p.y); ctx.lineTo(p.x - 6, p.y);
+    ctx.moveTo(p.x + 6, p.y); ctx.lineTo(p.x + 20, p.y);
+    ctx.moveTo(p.x, p.y - 20); ctx.lineTo(p.x, p.y - 6);
+    ctx.moveTo(p.x, p.y + 6); ctx.lineTo(p.x, p.y + 20);
+    ctx.stroke();
   }
 
   function drawStick() {
@@ -288,8 +506,11 @@
 
   function render() {
     drawWorld();
+    drawMonsters();
+    drawBullets();
     drawPlayer();
     drawStick();
+    drawFireBtn();
   }
 
   // ===== 루프 =====
